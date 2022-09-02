@@ -14,6 +14,18 @@ import numpy as np
 import getparts
 import os.path 
 from os import path
+import winsound
+import click
+from inventree.api import InvenTreeAPI
+import logging
+import coloredlogs
+from inventree.part import Part
+from inventree.stock import StockLocation
+from inventree.stock import StockItem
+from inventree.company import SupplierPart
+from inventree.stock import StockItem
+
+coloredlogs.install(level=logging.DEBUG)
 
 app_credentials= {
     'code': 'AAA',
@@ -21,6 +33,14 @@ app_credentials= {
     'client_secret': "CCC",
     'mouser_key': "DDD"
 }
+
+inventree = InvenTreeAPI('http://spasys-infra.uni.lux:8123/', token="f1481a3a24b28fca486a8c839ed4cf62453d148f")
+
+# Specify location
+LOCATION = "Box DAA"
+locations = StockLocation.list(inventree)
+location = [l for l in locations if l.name == LOCATION][0]
+logging.debug("Found location: {}".format(location))
 
 # initialize barcode_api with our API credentials
 api = getparts.API(app_credentials,debug=False)
@@ -72,14 +92,68 @@ while True:
             if barcodeData not in found:
                 state='Found'
                 found.add(barcodeData)
-                print(barcodeData.decode())
+                logging.info("Detected barcode data!")
+                winsound.Beep(440*2, 100)
                 # query the barcode_api.py for barcode
                 result = api.search(item,product_info=False)
+                winsound.Beep(440*3, 100) 
                 with codecs.open(barcodefile,'a', encoding='latin-1') as file:
                     file.write('{}\n'.format(codecs.decode(barcodeData,'latin-1')))
                     file.flush()
+
+                string = "Insert component into Inventree stock?"
+
+                if click.confirm(string, default=False):
+                    logging.debug("inserting....")
+
+                    # Try to find part in the database
+                    #
+                    #
+                    #
+                    # {
+                    #    "CountryOfOrigin": "PH",
+                    #    "DigiKeyPartNumber": "497-19774-ND",
+                    #    "InvoiceId": 87714396,
+                    #    "LotCode": null,
+                    #    "ManufacturerName": "STMICROELECTRONICS",
+                    #    "ManufacturerPartNumber": "STM32G031F6P6",
+                    #    "ProductDescription": "IC MCU 32BIT 32KB FLASH 20TSSOP",
+                    #    "PurchaseOrder": "",
+                    #    "Quantity": 10,
+                    #    "SalesorderId": 74465247
+                    # }
+
+                    response = result.response
+
+                    parts = Part.list(inventree)
+                    parts = [p for p in parts if p.name == response["ManufacturerPartNumber"]]
+
+                    if len(parts) <= 0:
+                        logging.info("Found no part, creating new")
+                        
+                        part = Part.create(inventree, {
+                            'name': response["ManufacturerPartNumber"],
+                            'description': response["ProductDescription"],
+                            'category': 1,
+                            'active': True,
+                            'virtual': False,
+                            ## Note - You do not have to fill out *all* fields
+                        })
+
+                        logging.info("Created new Part with PK {}".format(part.pk))
+
+                        supplierpart = SupplierPart.create(inventree, { 'part': part.pk, 'supplier': 1, 'SKU': response["DigiKeyPartNumber"] })
+                        logging.info("Created new Supplier/Part for Digikey with PK {}".format(supplierpart.pk))
+                    else:
+                        part = parts[0]
+                        logging.info("Found part {} with PK {}".format(part.name, part.pk))
+
+                    stock = StockItem.create(inventree, { 'part': part.pk, 'quantity': response["Quantity"], 'location': location.pk })
+                    logging.info("Stored new stock entry with {} items with PK {}".format(stock.quantity, stock.pk))
+                
             else:
                 state='Duplicate'
+                logging.warning("Found duplicate barcode")
         code=False
     else:
         state='Searching'
